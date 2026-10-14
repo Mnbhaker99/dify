@@ -1,0 +1,10 @@
+FROM ubuntu/squid:latest
+
+# See Dockerfile.coolify-nginx: baked files avoid Coolify runtime bind mounts.
+COPY ssrf_proxy/squid-agent.conf.template /etc/squid/squid.conf.template
+COPY ssrf_proxy/squid-common.conf.template /etc/squid/dify_common.conf.template
+COPY ssrf_proxy/docker-agent-entrypoint.sh /docker-entrypoint.sh
+
+RUN sed -i 's/\r$//' /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh
+
+ENTRYPOINT ["/docker-entrypoint.sh"]

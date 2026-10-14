@@ -1,0 +1,13 @@
+FROM nginx:latest
+
+# Bake Dify's configuration into the image. Coolify's Compose runtime can turn
+# repository file mounts into directories, so do not use bind mounts here.
+COPY nginx/nginx.conf.template /etc/nginx/nginx.conf.template
+COPY nginx/proxy.conf.template /etc/nginx/proxy.conf.template
+COPY nginx/https.conf.template /etc/nginx/https.conf.template
+COPY nginx/conf.d/default.conf.template /etc/nginx/conf.d/default.conf.template
+COPY nginx/docker-entrypoint.sh /docker-entrypoint.sh
+
+RUN sed -i 's/\r$//' /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh
+
+ENTRYPOINT ["/docker-entrypoint.sh"]

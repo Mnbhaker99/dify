@@ -267,40 +267,35 @@ services:
       - local_sandbox_proxy_network
 
   agent_ssrf_proxy:
-    image: ubuntu/squid:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.coolify-agent-ssrf
     restart: always
-    volumes:
-      # Coolify reliably mounts a directory, while file bind mounts can become
-      # directories during its source-file preparation step.
-      - ./ssrf_proxy:/opt/dify-ssrf:ro
-    entrypoint: ["sh", "-c", "cp /opt/dify-ssrf/squid-agent.conf.template /etc/squid/squid.conf.template && cp /opt/dify-ssrf/squid-common.conf.template /etc/squid/dify_common.conf.template && cp /opt/dify-ssrf/docker-agent-entrypoint.sh /docker-entrypoint.sh && sed -i 's/\\r$$//' /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh && /docker-entrypoint.sh"]
     env_file: ./.env
     networks:
       - default
       - local_sandbox_proxy_network
 
   ssrf_proxy:
-    image: ubuntu/squid:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.coolify-ssrf
     restart: always
-    volumes:
-      - ./ssrf_proxy:/opt/dify-ssrf:ro
-    entrypoint: ["sh", "-c", "cp /opt/dify-ssrf/squid.conf.template /etc/squid/squid.conf.template && cp /opt/dify-ssrf/squid-common.conf.template /etc/squid/dify_common.conf.template && cp /opt/dify-ssrf/docker-entrypoint.sh /docker-entrypoint.sh && sed -i 's/\\r$$//' /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh && /docker-entrypoint.sh"]
     env_file: ./.env
     networks:
       - default
       - ssrf_proxy_network
 
   nginx:
-    image: nginx:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.coolify-nginx
     restart: always
     env_file: ./.env
     environment:
       NGINX_HTTPS_ENABLED: "false"
       NGINX_PORT: "80"
       NGINX_SOCKET_IO_UPSTREAM: api_websocket:5001
-    volumes:
-      - ./nginx:/opt/dify-nginx:ro
-    entrypoint: ["sh", "-c", "cp /opt/dify-nginx/nginx.conf.template /etc/nginx/nginx.conf.template && cp /opt/dify-nginx/proxy.conf.template /etc/nginx/proxy.conf.template && cp /opt/dify-nginx/https.conf.template /etc/nginx/https.conf.template && cp -r /opt/dify-nginx/conf.d/. /etc/nginx/conf.d/ && cp /opt/dify-nginx/docker-entrypoint.sh /docker-entrypoint.sh && sed -i 's/\\r$$//' /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh && /docker-entrypoint.sh"]
     depends_on:
       - api
       - api_websocket
