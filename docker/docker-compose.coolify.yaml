@@ -272,6 +272,11 @@ services:
       dockerfile: Dockerfile.coolify-agent-ssrf
     restart: always
     env_file: ./.env
+    environment:
+      HTTP_PORT: ${SSRF_HTTP_PORT:?Set SSRF_HTTP_PORT in Coolify}
+      COREDUMP_DIR: ${SSRF_COREDUMP_DIR:?Set SSRF_COREDUMP_DIR in Coolify}
+      SSRF_PROXY_ALLOW_PRIVATE_IPS: ${SSRF_PROXY_ALLOW_PRIVATE_IPS:-}
+      SSRF_PROXY_ALLOW_PRIVATE_DOMAINS: ${SSRF_PROXY_ALLOW_PRIVATE_DOMAINS:-}
     networks:
       - default
       - local_sandbox_proxy_network
@@ -282,6 +287,11 @@ services:
       dockerfile: Dockerfile.coolify-ssrf
     restart: always
     env_file: ./.env
+    environment:
+      HTTP_PORT: ${SSRF_HTTP_PORT:?Set SSRF_HTTP_PORT in Coolify}
+      COREDUMP_DIR: ${SSRF_COREDUMP_DIR:?Set SSRF_COREDUMP_DIR in Coolify}
+      SSRF_PROXY_ALLOW_PRIVATE_IPS: ${SSRF_PROXY_ALLOW_PRIVATE_IPS:-}
+      SSRF_PROXY_ALLOW_PRIVATE_DOMAINS: ${SSRF_PROXY_ALLOW_PRIVATE_DOMAINS:-}
     networks:
       - default
       - ssrf_proxy_network
