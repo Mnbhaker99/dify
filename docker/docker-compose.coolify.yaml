@@ -8,6 +8,9 @@
 services:
   init_permissions:
     image: busybox:latest
+    # This job deliberately exits after preparing the shared storage volume.
+    # Do not let its completed state make the Coolify service look degraded.
+    exclude_from_hc: true
     command:
       - sh
       - -c
