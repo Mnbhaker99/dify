@@ -1,0 +1,334 @@
+# A deliberately small Compose stack for Coolify.
+#
+# It uses Dify's pre-built images and the existing nginx/ and ssrf_proxy/
+# templates in this directory.  Unlike docker-compose.yaml, it has no YAML
+# anchors, Compose profiles, host port bindings, or optional vector stores.
+# Coolify should route the nginx service on its internal port 80.
+
+services:
+  init_permissions:
+    image: busybox:latest
+    command:
+      - sh
+      - -c
+      - |
+        FLAG_FILE="/app/api/storage/.init_permissions"
+        if [ -f "$${FLAG_FILE}" ]; then
+          exit 0
+        fi
+        chown -R 1001:1001 /app/api/storage && touch "$${FLAG_FILE}"
+    volumes:
+      - dify_app_storage:/app/api/storage
+    restart: "no"
+
+  api:
+    image: langgenius/dify-api:1.17.1
+    restart: always
+    env_file: ./.env
+    environment:
+      MODE: api
+      CODE_EXECUTION_API_KEY: ${SANDBOX_API_KEY:?Set SANDBOX_API_KEY in Coolify}
+      INNER_API_KEY_FOR_PLUGIN: ${PLUGIN_DIFY_INNER_API_KEY:?Set PLUGIN_DIFY_INNER_API_KEY in Coolify}
+      AGENT_BACKEND_BASE_URL: http://agent_backend:5050
+      AGENT_BACKEND_API_TOKEN: ${DIFY_AGENT_API_TOKEN:?Set DIFY_AGENT_API_TOKEN in Coolify}
+    depends_on:
+      init_permissions:
+        condition: service_completed_successfully
+      db_postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      agent_backend:
+        condition: service_started
+    volumes:
+      - dify_app_storage:/app/api/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - default
+      - ssrf_proxy_network
+
+  api_websocket:
+    image: langgenius/dify-api:1.17.1
+    restart: always
+    env_file: ./.env
+    environment:
+      MODE: api
+      SERVER_WORKER_AMOUNT: "1"
+      SERVER_WORKER_CLASS: geventwebsocket.gunicorn.workers.GeventWebSocketWorker
+      SERVER_WORKER_CONNECTIONS: "1000"
+      GUNICORN_TIMEOUT: "360"
+    depends_on:
+      init_permissions:
+        condition: service_completed_successfully
+      db_postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - dify_app_storage:/app/api/storage
+    networks:
+      - default
+      - ssrf_proxy_network
+
+  worker:
+    image: langgenius/dify-api:1.17.1
+    restart: always
+    env_file: ./.env
+    environment:
+      MODE: worker
+      CODE_EXECUTION_API_KEY: ${SANDBOX_API_KEY:?Set SANDBOX_API_KEY in Coolify}
+      INNER_API_KEY_FOR_PLUGIN: ${PLUGIN_DIFY_INNER_API_KEY:?Set PLUGIN_DIFY_INNER_API_KEY in Coolify}
+      AGENT_BACKEND_BASE_URL: http://agent_backend:5050
+      AGENT_BACKEND_API_TOKEN: ${DIFY_AGENT_API_TOKEN:?Set DIFY_AGENT_API_TOKEN in Coolify}
+    depends_on:
+      init_permissions:
+        condition: service_completed_successfully
+      db_postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      agent_backend:
+        condition: service_started
+    volumes:
+      - dify_app_storage:/app/api/storage
+    networks:
+      - default
+      - ssrf_proxy_network
+
+  worker_beat:
+    image: langgenius/dify-api:1.17.1
+    restart: always
+    env_file: ./.env
+    environment:
+      MODE: beat
+    depends_on:
+      init_permissions:
+        condition: service_completed_successfully
+      db_postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - default
+      - ssrf_proxy_network
+
+  web:
+    image: langgenius/dify-web:1.17.1
+    restart: always
+    env_file: ./.env
+    environment:
+      SERVER_CONSOLE_API_URL: http://api:5001
+
+  db_postgres:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in Coolify}
+      POSTGRES_DB: dify
+      PGDATA: /var/lib/postgresql/data/pgdata
+    command: >-
+      postgres -c max_connections=100 -c shared_buffers=128MB
+      -c work_mem=4MB -c maintenance_work_mem=64MB
+      -c effective_cache_size=4096MB
+    volumes:
+      - dify_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "db_postgres", "-U", "postgres", "-d", "dify"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+
+  redis:
+    image: redis:6-alpine
+    restart: always
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in Coolify}
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in Coolify}"]
+    volumes:
+      - dify_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDISCLI_AUTH\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.39.2
+    restart: always
+    env_file: ./.env
+    volumes:
+      - dify_weaviate_data:/var/lib/weaviate
+    environment:
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      QUERY_DEFAULTS_LIMIT: "25"
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      DEFAULT_VECTORIZER_MODULE: none
+      CLUSTER_HOSTNAME: node1
+      AUTHENTICATION_APIKEY_ENABLED: "true"
+      AUTHENTICATION_APIKEY_ALLOWED_KEYS: ${WEAVIATE_API_KEY:?Set WEAVIATE_API_KEY in Coolify}
+      AUTHENTICATION_APIKEY_USERS: dify
+      AUTHORIZATION_ADMINLIST_ENABLED: "true"
+      AUTHORIZATION_ADMINLIST_USERS: dify
+      DISABLE_TELEMETRY: "false"
+
+  sandbox:
+    image: langgenius/dify-sandbox:0.2.15
+    restart: always
+    env_file: ./.env
+    environment:
+      API_KEY: ${SANDBOX_API_KEY:?Set SANDBOX_API_KEY in Coolify}
+      GIN_MODE: release
+      WORKER_TIMEOUT: "15"
+      ENABLE_NETWORK: "true"
+      HTTP_PROXY: http://ssrf_proxy:3128
+      HTTPS_PROXY: http://ssrf_proxy:3128
+      SANDBOX_PORT: "8194"
+    volumes:
+      - dify_sandbox_dependencies:/dependencies
+      - dify_sandbox_conf:/conf
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8194/health"]
+    networks:
+      - ssrf_proxy_network
+
+  plugin_daemon:
+    image: langgenius/dify-plugin-daemon:0.6.10-local
+    restart: always
+    env_file: ./.env
+    environment:
+      DB_DATABASE: dify_plugin
+      SERVER_PORT: "5002"
+      SERVER_KEY: ${PLUGIN_DAEMON_KEY:?Set PLUGIN_DAEMON_KEY in Coolify}
+      DIFY_INNER_API_URL: http://api:5001
+      DIFY_INNER_API_KEY: ${PLUGIN_DIFY_INNER_API_KEY:?Set PLUGIN_DIFY_INNER_API_KEY in Coolify}
+      PLUGIN_REMOTE_INSTALLING_HOST: 0.0.0.0
+      PLUGIN_REMOTE_INSTALLING_PORT: "5003"
+      PLUGIN_STORAGE_TYPE: local
+      PLUGIN_STORAGE_LOCAL_ROOT: /app/storage
+    depends_on:
+      db_postgres:
+        condition: service_healthy
+    volumes:
+      - dify_plugin_storage:/app/storage
+    networks:
+      - default
+      - ssrf_proxy_network
+
+  agent_backend:
+    image: langgenius/dify-agent-backend:1.17.1
+    restart: always
+    env_file: ./.env
+    environment:
+      DIFY_AGENT_REDIS_URL: "redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in Coolify}@redis:6379/2"
+      DIFY_AGENT_PLUGIN_DAEMON_URL: http://plugin_daemon:5002
+      DIFY_AGENT_PLUGIN_DAEMON_API_KEY: ${PLUGIN_DAEMON_KEY:?Set PLUGIN_DAEMON_KEY in Coolify}
+      DIFY_AGENT_INNER_API_URL: http://api:5001
+      DIFY_AGENT_INNER_API_KEY: ${PLUGIN_DIFY_INNER_API_KEY:?Set PLUGIN_DIFY_INNER_API_KEY in Coolify}
+      DIFY_AGENT_RUNTIME_BACKEND: local
+      DIFY_AGENT_LOCAL_SANDBOX_ENDPOINT: http://local_sandbox:5004
+      DIFY_AGENT_LOCAL_SANDBOX_AUTH_TOKEN: ${DIFY_AGENT_LOCAL_SANDBOX_AUTH_TOKEN:?Set DIFY_AGENT_LOCAL_SANDBOX_AUTH_TOKEN in Coolify}
+      DIFY_AGENT_STUB_API_BASE_URL: http://agent_backend:5050/agent-stub
+      DIFY_AGENT_SANDBOX_FILES_BASE_URL: http://api:5001
+      DIFY_AGENT_SERVER_SECRET_KEY: ${DIFY_AGENT_SERVER_SECRET_KEY:?Set DIFY_AGENT_SERVER_SECRET_KEY in Coolify}
+      DIFY_AGENT_API_TOKEN: ${DIFY_AGENT_API_TOKEN:?Set DIFY_AGENT_API_TOKEN in Coolify}
+    depends_on:
+      redis:
+        condition: service_started
+      plugin_daemon:
+        condition: service_started
+    networks:
+      - default
+      - agent_sandbox_network
+
+  local_sandbox:
+    image: langgenius/dify-agent-local-sandbox:1.17.1
+    restart: always
+    environment:
+      SHELLCTL_AUTH_TOKEN: ${DIFY_AGENT_LOCAL_SANDBOX_AUTH_TOKEN:?Set DIFY_AGENT_LOCAL_SANDBOX_AUTH_TOKEN in Coolify}
+      HTTP_PROXY: http://agent_ssrf_proxy:3128
+      HTTPS_PROXY: http://agent_ssrf_proxy:3128
+      NO_PROXY: localhost,127.0.0.1
+    volumes:
+      - dify_agent_local_sandbox_home:/home/dify
+      - dify_agent_local_sandbox_workspace:/workspace
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5004/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - agent_sandbox_network
+      - local_sandbox_proxy_network
+
+  agent_ssrf_proxy:
+    image: ubuntu/squid:latest
+    restart: always
+    volumes:
+      - ./ssrf_proxy/squid-agent.conf.template:/etc/squid/squid.conf.template:ro
+      - ./ssrf_proxy/squid-common.conf.template:/etc/squid/dify_common.conf.template:ro
+      - ./ssrf_proxy/docker-agent-entrypoint.sh:/docker-entrypoint-mount.sh:ro
+    entrypoint: ["sh", "-c", "cp /docker-entrypoint-mount.sh /docker-entrypoint.sh && sed -i 's/\\r$$//' /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh && /docker-entrypoint.sh"]
+    env_file: ./.env
+    networks:
+      - default
+      - local_sandbox_proxy_network
+
+  ssrf_proxy:
+    image: ubuntu/squid:latest
+    restart: always
+    volumes:
+      - ./ssrf_proxy/squid.conf.template:/etc/squid/squid.conf.template:ro
+      - ./ssrf_proxy/squid-common.conf.template:/etc/squid/dify_common.conf.template:ro
+      - ./ssrf_proxy/docker-entrypoint.sh:/docker-entrypoint-mount.sh:ro
+    entrypoint: ["sh", "-c", "cp /docker-entrypoint-mount.sh /docker-entrypoint.sh && sed -i 's/\\r$$//' /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh && /docker-entrypoint.sh"]
+    env_file: ./.env
+    networks:
+      - default
+      - ssrf_proxy_network
+
+  nginx:
+    image: nginx:latest
+    restart: always
+    env_file: ./.env
+    environment:
+      NGINX_HTTPS_ENABLED: "false"
+      NGINX_PORT: "80"
+      NGINX_SOCKET_IO_UPSTREAM: api_websocket:5001
+    volumes:
+      - ./nginx/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
+      - ./nginx/proxy.conf.template:/etc/nginx/proxy.conf.template:ro
+      - ./nginx/https.conf.template:/etc/nginx/https.conf.template:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/docker-entrypoint.sh:/docker-entrypoint-mount.sh:ro
+    entrypoint: ["sh", "-c", "cp /docker-entrypoint-mount.sh /docker-entrypoint.sh && sed -i 's/\\r$$//' /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh && /docker-entrypoint.sh"]
+    depends_on:
+      - api
+      - api_websocket
+      - web
+    expose:
+      - "80"
+
+networks:
+  ssrf_proxy_network:
+    internal: true
+  local_sandbox_proxy_network:
+    internal: true
+  agent_sandbox_network:
+    internal: true
+
+volumes:
+  dify_app_storage:
+  dify_postgres_data:
+  dify_redis_data:
+  dify_weaviate_data:
+  dify_sandbox_dependencies:
+  dify_sandbox_conf:
+  dify_plugin_storage:
+  dify_agent_local_sandbox_home:
+  dify_agent_local_sandbox_workspace:
